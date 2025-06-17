@@ -1,0 +1,241 @@
+@page "/"
+@using blazor_spreadsheet_agent.Models
+@using System.Globalization
+@inject SpreadsheetService SpreadsheetService
+@inject NavigationManager NavigationManager
+@inject ILogger<Index> Logger
+
+<PageTitle>Dashboard - Spreadsheet Agent</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>Dashboard</h1>
+    <button class="btn btn-primary" @onclick="() => NavigateToUpload()">
+        <i class="bi bi-plus-lg me-2"></i>Upload New
+    </button>
+</div>
+
+@if (isLoading)
+{
+    <div class="text-center my-5">
+        <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+        <p class="mt-2">Loading spreadsheets...</p>
+    </div>
+}
+else if (spreadsheets?.Any() == true)
+{
+    <div class="card shadow-sm">
+        <div class="card-header bg-white">
+            <h5 class="mb-0">Uploaded Spreadsheets</h5>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>File Name</th>
+                        <th>Uploaded</th>
+                        <th class="text-end">Rows</th>
+                        <th class="text-end">File Size</th>
+                        <th class="text-end">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var sheet in spreadsheets)
+                    {
+                        <tr>
+                            <td>
+                                <div class="d-flex align-items-center">
+                                    <i class="bi bi-file-earmark-spreadsheet text-primary me-2"></i>
+                                    <div>
+                                        <div class="fw-semibold">@sheet.FileName</div>
+                                        @if (!string.IsNullOrWhiteSpace(sheet.Description))
+                                        {
+                                            <div class="small text-muted">@sheet.Description</div>
+                                        }
+                                    </div>
+                                </div>
+                            </td>
+                            <td>@sheet.UploadDate.ToLocalTime().ToString("g")</td>
+                            <td class="text-end">@sheet.DataRowsCount.ToString("N0")</td>
+                            <td class="text-end">@FormatFileSize(sheet.FileSize)</td>
+                            <td class="text-end">
+                                <div class="btn-group btn-group-sm" role="group">
+                                    <button class="btn btn-outline-primary" @onclick="() => ViewSpreadsheet(sheet.Id)" title="View">
+                                        <i class="bi bi-eye"></i>
+                                    </button>
+                                    <button class="btn btn-outline-secondary" @onclick="() => QuerySpreadsheet(sheet.Id)" title="Query">
+                                        <i class="bi bi-search"></i>
+                                    </button>
+                                    <button class="btn btn-outline-danger" @onclick="() => DeleteSpreadsheet(sheet)" title="Delete">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        <div class="card-footer bg-white">
+            <div class="d-flex justify-content-between align-items-center">
+                <div class="text-muted small">
+                    Showing @spreadsheets.Count spreadsheets
+                </div>
+                <div>
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="RefreshSpreadsheets">
+                        <i class="bi bi-arrow-clockwise"></i> Refresh
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+else
+{
+    <div class="text-center py-5 bg-light rounded-3">
+        <i class="bi bi-file-earmark-spreadsheet display-1 text-muted mb-3"></i>
+        <h3>No spreadsheets found</h3>
+        <p class="lead">Upload your first spreadsheet to get started</p>
+        <button class="btn btn-primary btn-lg" @onclick="NavigateToUpload">
+            <i class="bi bi-cloud-upload me-2"></i>Upload Spreadsheet
+        </button>
+    </div>
+}
+
+@if (showDeleteDialog)
+{
+    <div class="modal show d-block" tabindex="-1" style="background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Delete Spreadsheet</h5>
+                    <button type="button" class="btn-close" @onclick="() => showDeleteDialog = false"></button>
+                </div>
+                <div class="modal-body">
+                    <p>Are you sure you want to delete the spreadsheet <strong>@spreadsheetToDelete?.FileName</strong>?</p>
+                    <p class="text-danger">This action cannot be undone.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" @onclick="() => showDeleteDialog = false">Cancel</button>
+                    <button type="button" class="btn btn-danger" @onclick="ConfirmDelete">
+                        @if (isDeleting)
+                        {
+                            <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                            <span>Deleting...</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-trash me-1"></i>
+                            <span>Delete</span>
+                        }
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<Spreadsheet>? spreadsheets;
+    private bool isLoading = true;
+    private bool showDeleteDialog = false;
+    private bool isDeleting = false;
+    private Spreadsheet? spreadsheetToDelete;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadSpreadsheets();
+    }
+
+    private void NavigateToUpload()
+    {
+        NavigationManager.NavigateTo("/file-upload");
+    }
+
+    private async Task LoadSpreadsheets()
+    {
+        try
+        {
+            isLoading = true;
+            StateHasChanged();
+            
+            spreadsheets = await SpreadsheetService.GetSpreadsheetsAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading spreadsheets");
+            // In a real app, you'd show an error message to the user
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task RefreshSpreadsheets()
+    {
+        await LoadSpreadsheets();
+    }
+
+    private void ViewSpreadsheet(int id)
+    {
+        NavigationManager.NavigateTo($"/spreadsheet/{id}");
+    }
+
+    private void QuerySpreadsheet(int id)
+    {
+        NavigationManager.NavigateTo($"/query/{id}");
+    }
+
+    private void DeleteSpreadsheet(Spreadsheet spreadsheet)
+    {
+        spreadsheetToDelete = spreadsheet;
+        showDeleteDialog = true;
+        StateHasChanged();
+    }
+
+    private async Task ConfirmDelete()
+    {
+        if (spreadsheetToDelete == null) return;
+        
+        try
+        {
+            isDeleting = true;
+            StateHasChanged();
+            
+            var success = await SpreadsheetService.DeleteSpreadsheetAsync(spreadsheetToDelete.Id);
+            if (success)
+            {
+                await LoadSpreadsheets();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error deleting spreadsheet {SpreadsheetId}", spreadsheetToDelete.Id);
+        }
+        finally
+        {
+            isDeleting = false;
+            showDeleteDialog = false;
+            spreadsheetToDelete = null;
+            StateHasChanged();
+        }
+    }
+
+    private string FormatFileSize(long bytes)
+    {
+        string[] sizes = { "B", "KB", "MB", "GB" };
+        int order = 0;
+        double len = bytes;
+        
+        while (len >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            len /= 1024;
+        }
+        
+        return $"{len:0.##} {sizes[order]}";
+    }
+}

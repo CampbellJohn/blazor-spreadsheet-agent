@@ -1,0 +1,166 @@
+# Blazor Spreadsheet Agent - Project Plan
+
+project:
+  name: "Blazor Spreadsheet Agent"
+  description: "An application to upload spreadsheets, store them in SQL, query with natural language via OpenAI, and export to Eloqua"
+  version: "1.0.0"
+  targetFramework: "net7.0"
+
+dependencies:
+  backend:
+    - "Microsoft.EntityFrameworkCore.SqlServer"
+    - "Microsoft.EntityFrameworkCore.Tools"
+    - "DocumentFormat.OpenXml"  # For Excel file processing
+    - "CsvHelper"  # For CSV file processing
+    - "Azure.AI.OpenAI"  # For OpenAI integration
+    - "RestSharp"  # For Eloqua API calls
+    - "Serilog"  # For logging
+    - "FluentValidation"  # For input validation
+
+  frontend:
+    - "Blazor"
+    - "MudBlazor"  # For UI components
+    - "BlazorInputFile"  # For file uploads
+
+database:
+  name: "SpreadsheetAgentDb"
+  tables:
+    - name: "Spreadsheets"
+      description: "Stores metadata about uploaded spreadsheets"
+      columns:
+        - name: "Id"
+          type: "Guid"
+          isPrimaryKey: true
+        - name: "FileName"
+          type: "string"
+          maxLength: 255
+        - name: "UploadDate"
+          type: "DateTime"
+        - name: "Processed"
+          type: "bool"
+          defaultValue: false
+
+    - name: "SpreadsheetData"
+      description: "Stores the actual data from spreadsheets"
+      columns:
+        - name: "Id"
+          type: "int"
+          isPrimaryKey: true
+          isIdentity: true
+        - name: "SpreadsheetId"
+          type: "Guid"
+          isForeignKey: true
+        - name: "RowData"
+          type: "string(MAX)"  # JSON serialized row data
+
+    - name: "QueryLogs"
+      description: "Logs all natural language queries and their results"
+      columns:
+        - name: "Id"
+          type: "int"
+          isPrimaryKey: true
+          isIdentity: true
+        - name: "QueryText"
+          type: "nvarchar(1000)"
+        - name: "GeneratedSql"
+          type: "nvarchar(MAX)"
+        - name: "Timestamp"
+          type: "datetime"
+          defaultValue: "GETDATE()"
+
+phases:
+  - name: "Phase 1: Project Setup & Database"
+    tasks:
+      - "Set up project structure"
+      - "Configure Entity Framework Core"
+      - "Create database context and models"
+      - "Set up initial migration"
+      - "Configure dependency injection"
+
+  - name: "Phase 2: File Upload & Processing"
+    tasks:
+      - "Create file upload UI component"
+      - "Implement file type validation"
+      - "Add XLSX parsing"
+      - "Add CSV parsing"
+      - "Implement data validation"
+      - "Store data in database"
+
+  - name: "Phase 3: Natural Language Query"
+    tasks:
+      - "Integrate OpenAI API"
+      - "Create prompt templates for SQL generation"
+      - "Implement query validation"
+      - "Create query execution service"
+      - "Build query history feature"
+
+  - name: "Phase 4: Eloqua Integration"
+    tasks:
+      - "Set up Eloqua API client"
+      - "Implement authentication"
+      - "Create data export functionality"
+      - "Add approval workflow"
+      - "Implement error handling"
+
+  - name: "Phase 5: UI/UX & Testing"
+    tasks:
+      - "Create dashboard"
+      - "Implement results display"
+      - "Add loading states and error handling"
+      - "Write unit tests"
+      - "Perform integration testing"
+      - "User acceptance testing"
+
+  - name: "Phase 6: Deployment"
+    tasks:
+      - "Set up CI/CD pipeline"
+      - "Configure production environment"
+      - "Deploy application"
+      - "Monitor and gather feedback"
+
+apiEndpoints:
+  - method: "POST"
+    path: "/api/spreadsheets/upload"
+    description: "Upload and process a spreadsheet file"
+    
+  - method: "POST"
+    path: "/api/query/execute"
+    description: "Execute a natural language query"
+    
+  - method: "POST"
+    path: "/api/eloqua/export"
+    description: "Export data to Eloqua"
+
+environmentVariables:
+  - name: "ConnectionStrings__DefaultConnection"
+    description: "SQL Server connection string"
+    required: true
+    
+  - name: "OpenAI__ApiKey"
+    description: "OpenAI API key"
+    required: true
+    
+  - name: "Eloqua__ApiKey"
+    description: "Eloqua API key"
+    required: true
+    
+  - name: "Eloqua__CompanyId"
+    description: "Eloqua company ID"
+    required: true
+
+frontendRoutes:
+  - path: "/"
+    component: "Dashboard"
+    description: "Main dashboard with upload and query features"
+    
+  - path: "/spreadsheets"
+    component: "SpreadsheetList"
+    description: "List of uploaded spreadsheets"
+    
+  - path: "/query"
+    component: "QueryInterface"
+    description: "Natural language query interface"
+    
+  - path: "/history"
+    component: "QueryHistory"
+    description: "Query execution history"
