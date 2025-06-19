@@ -23,6 +23,20 @@ builder.Services.AddScoped<SpreadsheetService>();
 builder.Services.AddScoped<QueryService>();
 builder.Services.AddScoped<FileProcessingService>();
 
+// Register OpenAIService if API key is configured
+var openAiApiKey = builder.Configuration["OpenAI:ApiKey"];
+if (!string.IsNullOrEmpty(openAiApiKey))
+{
+    builder.Services.AddScoped<OpenAIService>();
+}
+else
+{
+    builder.Services.AddScoped<OpenAIService>(sp => 
+        new OpenAIService(
+            sp.GetRequiredService<ILogger<OpenAIService>>(),
+            sp.GetRequiredService<IConfiguration>()));
+}
+
 // Add HTTP context accessor for services that need it
 builder.Services.AddHttpContextAccessor();
 
