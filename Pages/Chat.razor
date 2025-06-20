@@ -1,0 +1,250 @@
+@page "/chat"
+@using blazor_spreadsheet_agent.Services
+@using blazor_spreadsheet_agent.Models
+@using System.Text.Json
+@using System.Threading.Tasks
+@using Microsoft.AspNetCore.Components.Web
+@inject OpenAIService OpenAIService
+@inject QueryService QueryService
+@inject IJSRuntime JSRuntime
+@inject ILogger<Chat> _logger
+@implements IAsyncDisposable
+
+@using Microsoft.Extensions.Configuration
+@inject IConfiguration Configuration
+
+<PageTitle>Chat with Agent</PageTitle>
+
+<div class="chat-container">
+    <div class="chat-header">
+        <h3>Chat with Spreadsheet Agent</h3>
+    </div>
+    
+    <div class="chat-messages" id="chat-messages">
+        @foreach (var message in chatMessages)
+        {
+            <div class="message @message.Sender">
+                <div class="message-content">
+                    @if (message.IsTyping)
+                    {
+                        <div class="typing-indicator">
+                            <span></span><span></span><span></span>
+                        </div>
+                    }
+                    else
+                    {
+                        @if (message.Sender == "assistant")
+                        {
+                            <div class="message-avatar">🤖</div>
+                        }
+                        <div class="message-text">@message.Text</div>
+                    }
+                </div>
+                @if (!string.IsNullOrEmpty(message.Timestamp))
+                {
+                    <div class="message-time">@message.Timestamp</div>
+                }
+            </div>
+        }
+        
+        @if (isLoading)
+        {
+            <div class="message assistant">
+                <div class="message-content">
+                    <div class="typing-indicator">
+                        <span></span><span></span><span></span>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+
+    <div class="chat-input">
+        <div class="input-group">
+            <input id="chat-input"
+                   type="text"
+                   class="form-control"
+                   placeholder="Type a message..."
+                   @bind="userMessage"
+                   @bind:event="oninput"
+                   @onkeydown="HandleKeyDown"
+                   disabled="@isLoading"
+                   @ref="chatInputRef" />
+            <button class="btn btn-primary" 
+                    @onclick="SendMessage" 
+                    disabled="@(string.IsNullOrWhiteSpace(userMessage) || isLoading)">
+                <i class="bi bi-send"></i>
+            </button>
+        </div>
+    </div>
+</div>
+
+@code {
+    private string userMessage = string.Empty;
+    private bool isLoading = false;
+    private string errorMessage = string.Empty;
+    private List<ChatMessage> chatMessages = new();
+    private ElementReference chatInputRef;
+    private DotNetObjectReference<Chat>? dotNetHelper;
+    
+    // Local message class for the chat UI
+    public class ChatMessage
+    {
+        public string Sender { get; set; } = "user"; // 'user' or 'assistant'
+        public string Text { get; set; } = string.Empty;
+        public string Timestamp { get; set; } = DateTime.Now.ToString("h:mm tt");
+        public bool IsTyping { get; set; } = false;
+        
+        // Convert to the OpenAI ChatMessage format
+        public Models.ChatMessage ToOpenAIChatMessage()
+        {
+            return new Models.ChatMessage
+            {
+                Role = Sender == "user" ? "user" : "assistant",
+                Content = Text
+            };
+        }
+        
+        // Create from OpenAI ChatMessage
+        public static ChatMessage FromOpenAIChatMessage(Models.ChatMessage message)
+        {
+            return new ChatMessage
+            {
+                Sender = message.Role == "user" ? "user" : "assistant",
+                Text = message.Content,
+                Timestamp = DateTime.Now.ToString("h:mm tt")
+            };
+        }
+    }
+    
+    protected override Task OnInitializedAsync()
+    {
+        // Add welcome message
+        chatMessages.Add(new ChatMessage 
+        { 
+            Sender = "assistant", 
+            Text = "Hello! I'm your spreadsheet assistant. How can I help you today?",
+            Timestamp = DateTime.Now.ToString("h:mm tt")
+        });
+        
+        return Task.CompletedTask;
+    }
+    
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            dotNetHelper = DotNetObjectReference.Create(this);
+            await JSRuntime.InvokeVoidAsync("chat.focusInput", "chat-input");
+        }
+        await ScrollToBottom();
+    }
+    
+    public ValueTask DisposeAsync()
+    {
+        if (dotNetHelper != null)
+        {
+            dotNetHelper.Dispose();
+        }
+        return ValueTask.CompletedTask;
+    }
+    
+    [JSInvokable]
+    public void HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !e.ShiftKey)
+        {
+            _ = SendMessage();
+        }
+    }
+    
+    private async Task ScrollToBottom()
+    {
+        await JSRuntime.InvokeVoidAsync("chat.scrollToBottom", "chat-messages");
+    }
+    
+    private async Task SendMessage()
+    {
+        if (string.IsNullOrWhiteSpace(userMessage)) return;
+        
+        // Add user message to chat
+        var userMsg = new ChatMessage 
+        { 
+            Sender = "user", 
+            Text = userMessage,
+            Timestamp = DateTime.Now.ToString("h:mm tt")
+        };
+        chatMessages.Add(userMsg);
+        
+        var currentMessage = userMessage.Trim();
+        userMessage = string.Empty; // Clear input
+        
+        // Create assistant message placeholder
+        var assistantMessage = new ChatMessage 
+        { 
+            Sender = "assistant", 
+            Text = "",
+            Timestamp = DateTime.Now.ToString("h:mm tt"),
+            IsTyping = true
+        };
+        chatMessages.Add(assistantMessage);
+        
+        try
+        {
+            isLoading = true;
+            StateHasChanged();
+            await ScrollToBottom();
+            
+            // Prepare conversation history for context
+            var history = chatMessages
+                .Where(m => !m.IsTyping && !string.IsNullOrEmpty(m.Text))
+                .Select(m => m.ToOpenAIChatMessage())
+                .ToList();
+            
+            // Get response from OpenAI
+            var response = await OpenAIService.GenerateChatResponseAsync(currentMessage, history);
+            
+            // Update assistant message with actual response
+            assistantMessage.IsTyping = false;
+            assistantMessage.Text = response;
+            
+            _logger.LogInformation("Chat message processed: {Message}", currentMessage);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing message");
+            errorMessage = "Sorry, there was an error processing your message.";
+            chatMessages.Add(new ChatMessage 
+            { 
+                Sender = "assistant", 
+                Text = errorMessage,
+                Timestamp = DateTime.Now.ToString("h:mm tt")
+            });
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+            await ScrollToBottom();
+            await JSRuntime.InvokeVoidAsync("chat.focusInput", "chat-input");
+        }
+    }
+
+    private void SetExampleQuery(string query)
+    {
+        userMessage = query;
+        // Focus the input field
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(50);
+            await JSRuntime.InvokeVoidAsync("focusInput");
+        });
+    }
+
+    [JSInvokable]
+    public static void FocusInput()
+    {
+        // This method is called from JavaScript to focus the input
+        // No async operations needed, so we keep it synchronous
+    }
+}
