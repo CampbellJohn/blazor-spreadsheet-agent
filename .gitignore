@@ -52,3 +52,43 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+# User-specific files
+*.user
+*.userosscache
+*.suo
+*.userprefs
+
+# Sensitive data
+appsettings*.json
+!appsettings*.schema.json
+!appsettings.Development.json.example
+
+# Local development files
+*.local.*
+*.local
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# VS Code settings
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
+
+# JetBrains Rider
+.idea/
+*.sln.iml
+
+# Visual Studio cache/options directory
+.vs/
+
+# Visual Studio Code
+.history/
+
+# End of https://www.toptal.com/developers/gitignore/api/visualstudio,visualstudiocode,dotnetcore,dotnet
