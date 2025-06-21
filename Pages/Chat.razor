@@ -24,6 +24,10 @@
         @foreach (var message in chatMessages)
         {
             <div class="message @message.Sender">
+                @if (message.Sender == "assistant")
+                {
+                    <div class="message-avatar">🤖</div>
+                }
                 <div class="message-content">
                     @if (message.IsTyping)
                     {
@@ -33,16 +37,16 @@
                     }
                     else
                     {
-                        @if (message.Sender == "assistant")
-                        {
-                            <div class="message-avatar">🤖</div>
-                        }
                         <div class="message-text">@message.Text</div>
+                        @if (!string.IsNullOrEmpty(message.Timestamp))
+                        {
+                            <div class="message-time">@message.Timestamp</div>
+                        }
                     }
                 </div>
-                @if (!string.IsNullOrEmpty(message.Timestamp))
+                @if (message.Sender == "user")
                 {
-                    <div class="message-time">@message.Timestamp</div>
+                    <div class="message-avatar">👤</div>
                 }
             </div>
         }
