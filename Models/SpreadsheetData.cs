@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
@@ -25,4 +26,10 @@ public class SpreadsheetData
     // Navigation property
     [ForeignKey("SpreadsheetId")]
     public Spreadsheet Spreadsheet { get; set; } = null!;
+    
+    [NotMapped]
+    public Dictionary<string, string> Data => 
+        string.IsNullOrEmpty(JsonData) 
+            ? new Dictionary<string, string>() 
+            : JsonSerializer.Deserialize<Dictionary<string, string>>(JsonData) ?? new Dictionary<string, string>();
 }

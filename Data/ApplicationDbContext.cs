@@ -12,7 +12,6 @@ public class ApplicationDbContext : DbContext
 
     public DbSet<Spreadsheet> Spreadsheets { get; set; } = null!;
     public DbSet<SpreadsheetData> SpreadsheetData { get; set; } = null!;
-    public DbSet<QueryLog> QueryLogs { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -28,11 +27,6 @@ public class ApplicationDbContext : DbContext
         // Configure indexes for better query performance
         modelBuilder.Entity<SpreadsheetData>()
             .HasIndex(d => d.SpreadsheetId);
-            
-        modelBuilder.Entity<QueryLog>()
-            .HasIndex(q => q.Timestamp);
-            
-        modelBuilder.Entity<QueryLog>()
-            .HasIndex(q => q.UserId);
+
     }
 }

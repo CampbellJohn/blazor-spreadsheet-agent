@@ -20,7 +20,6 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
 
 // Add services for dependency injection
 builder.Services.AddScoped<SpreadsheetService>();
-builder.Services.AddScoped<QueryService>();
 builder.Services.AddScoped<FileProcessingService>();
 
 // Register OpenAIService

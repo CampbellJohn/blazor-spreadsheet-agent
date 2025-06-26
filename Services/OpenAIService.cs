@@ -7,6 +7,8 @@ using System.Threading.Tasks;
 using System;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.IO;
+using System.Threading;
 using blazor_spreadsheet_agent.Models;
 
 public class OpenAIService : IAsyncDisposable
@@ -61,45 +63,56 @@ Be concise, helpful, and friendly in your responses. If you don't know something
                     new { role = "user", content = prompt }
                 },
                 temperature = 0.2,
-                max_tokens = 500
+                max_tokens = 500,
+                stream = true
             };
 
-            var content = new StringContent(
+            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions");
+            request.Content = new StringContent(
                 JsonSerializer.Serialize(requestBody),
                 Encoding.UTF8,
                 "application/json");
 
-            var response = await _httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content);
+            using var response = await _httpClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                CancellationToken.None);
+                
             response.EnsureSuccessStatusCode();
-            
-            var responseContent = await response.Content.ReadAsStringAsync();
-            if (string.IsNullOrWhiteSpace(responseContent))
-            {
-                _logger.LogError("Received empty response from OpenAI API");
-                throw new InvalidOperationException("Received empty response from OpenAI API");
-            }
 
-            using var jsonResponse = JsonDocument.Parse(responseContent);
-            var root = jsonResponse.RootElement;
-            
-            if (!root.TryGetProperty("choices", out var choices) || choices.GetArrayLength() == 0)
-            {
-                _logger.LogError("No choices in response from OpenAI API");
-                throw new InvalidOperationException("No choices in response from OpenAI API");
-            }
+            using var stream = await response.Content.ReadAsStreamAsync(CancellationToken.None);
+            using var reader = new StreamReader(stream);
 
-            var firstChoice = choices[0];
-            if (!firstChoice.TryGetProperty("message", out var messageElement) || 
-                !messageElement.TryGetProperty("content", out var contentElement))
+            var buffer = new StringBuilder();
+            while (!CancellationToken.None.IsCancellationRequested)
             {
-                _logger.LogError("Invalid response format from OpenAI API: {Response}", responseContent);
-                throw new InvalidOperationException("Invalid response format from OpenAI API");
+                var line = await reader.ReadLineAsync(CancellationToken.None);
+                if (line == null) break;
+
+                if (line.StartsWith("data: "))
+                {
+                    var eventData = line[6..]; // Remove 'data: ' prefix
+                    if (eventData == "[DONE]")
+                    {
+                        break;
+                    }
+
+                    using var jsonDoc = JsonDocument.Parse(eventData);
+                    var choice = jsonDoc.RootElement.GetProperty("choices")[0];
+                    if (choice.TryGetProperty("delta", out var delta) && 
+                        delta.TryGetProperty("content", out var content))
+                    {
+                        var contentValue = content.GetString();
+                        if (!string.IsNullOrEmpty(contentValue))
+                        {
+                            buffer.Append(contentValue);
+                        }
+                    }
+                }
             }
-            
-            var sqlQuery = contentElement.GetString()?.Trim() ?? 
-                throw new InvalidOperationException("Content is null in the response from OpenAI API");
             
             // Basic validation of the SQL query
+            var sqlQuery = buffer.ToString();
             if (string.IsNullOrWhiteSpace(sqlQuery))
             {
                 _logger.LogWarning("Generated SQL query is null or empty");
@@ -108,10 +121,25 @@ Be concise, helpful, and friendly in your responses. If you don't know something
 
             return sqlQuery;
         }
+        catch (HttpRequestException httpEx)
+        {
+            _logger.LogError(httpEx, "Error calling OpenAI API");
+            throw new ApplicationException("Failed to communicate with the AI service. Please check your connection and try again.", httpEx);
+        }
+        catch (JsonException jsonEx)
+        {
+            _logger.LogError(jsonEx, "Error parsing OpenAI API response");
+            throw new ApplicationException("Error processing the AI service response. Please try again.", jsonEx);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("Streaming was canceled");
+            throw;
+        }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error generating SQL query");
-            throw new ApplicationException("Failed to generate SQL query. Please try again.", ex);
+            _logger.LogError(ex, "Unexpected error generating chat response");
+            throw new ApplicationException("An unexpected error occurred. Please try again later.", ex);
         }
     }
 
@@ -132,77 +160,128 @@ Be concise, helpful, and friendly in your responses. If you don't know something
         return prompt.ToString();
     }
 
-    public async Task<string> GenerateChatResponseAsync(string userMessage, List<ChatMessage>? conversationHistory = null)
+    public IAsyncEnumerable<string> StreamChatResponseAsync(string userMessage, List<ChatMessage>? conversationHistory = null, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(userMessage))
             throw new ArgumentException("Message cannot be empty", nameof(userMessage));
 
-        try
-        {
-            var messages = new List<ChatMessage>
-            {
-                new() { Role = "system", Content = SystemPrompt }
-            };
+        return StreamChatResponseInternalAsync(userMessage, conversationHistory, cancellationToken);
+    }
 
-            // Add conversation history if provided
-            if (conversationHistory?.Any() == true)
+    private async IAsyncEnumerable<string> StreamChatResponseInternalAsync(string userMessage, List<ChatMessage>? conversationHistory, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var messages = new List<ChatMessage>
+        {
+            new() { Role = "system", Content = SystemPrompt }
+        };
+
+        // Add conversation history if provided
+        if (conversationHistory?.Any() == true)
+        {
+            messages.AddRange(conversationHistory);
+        }
+
+        // Add the current user message
+        messages.Add(new ChatMessage { Role = "user", Content = userMessage });
+
+        var requestBody = new
+        {
+            model = "gpt-4-turbo-preview",
+            messages = messages.Select(m => new { role = m.Role, content = m.Content }),
+            temperature = 0.7,
+            max_tokens = 1000,
+            stream = true
+        };
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions");
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(requestBody),
+            Encoding.UTF8,
+            "application/json");
+
+        using var response = await _httpClient.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+            
+        response.EnsureSuccessStatusCode();
+
+        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var reader = new StreamReader(stream);
+        var buffer = new StringBuilder();
+        var eventData = new StringBuilder();
+        var inDataSection = false;
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var line = await reader.ReadLineAsync(cancellationToken);
+            if (line == null) break; // End of stream
+
+            // Skip empty lines
+            if (string.IsNullOrWhiteSpace(line))
             {
-                messages.AddRange(conversationHistory);
+                if (inDataSection && eventData.Length > 0)
+                {
+                    // Process the complete event
+                    var eventStr = eventData.ToString();
+                    eventData.Clear();
+                    inDataSection = false;
+
+                    if (eventStr == "[DONE]")
+                    {
+                        _logger.LogDebug("Received [DONE] event");
+                        break;
+                    }
+
+                    string? contentValue = null;
+                    bool hasError = false;
+                    
+                    try
+                    {
+                        using var jsonDoc = JsonDocument.Parse(eventStr);
+                        if (jsonDoc.RootElement.TryGetProperty("choices", out var choices) && 
+                            choices.GetArrayLength() > 0)
+                        {
+                            var choice = choices[0];
+                            if (choice.TryGetProperty("delta", out var delta) && 
+                                delta.TryGetProperty("content", out var content) &&
+                                content.ValueKind != JsonValueKind.Null)
+                            {
+                                contentValue = content.GetString();
+                            }
+                        }
+                    }
+                    catch (JsonException jsonEx)
+                    {
+                        _logger.LogError(jsonEx, "Error parsing JSON from OpenAI stream: {EventData}", eventStr);
+                        hasError = true;
+                    }
+                    
+                    if (!hasError && !string.IsNullOrEmpty(contentValue))
+                    {
+                        buffer.Append(contentValue);
+                        _logger.LogDebug("Yielding content chunk: {Chunk}", contentValue);
+                        yield return contentValue;
+                    }
+                }
+                continue;
             }
 
-            // Add the current user message
-            messages.Add(new ChatMessage { Role = "user", Content = userMessage });
-
-            var request = new ChatRequest
+            // Check for data section
+            if (line.StartsWith("data: "))
             {
-                Messages = messages,
-                Temperature = 0.7,
-                MaxTokens = 1000
-            };
-
-            var content = new StringContent(
-                JsonSerializer.Serialize(request, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }),
-                Encoding.UTF8,
-                "application/json");
-
-            using var response = await _httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content);
-            response.EnsureSuccessStatusCode();
-
-            var responseContent = await response.Content.ReadAsStringAsync();
-            if (string.IsNullOrWhiteSpace(responseContent))
-            {
-                _logger.LogError("Received empty response from OpenAI API");
-                throw new InvalidOperationException("Received empty response from OpenAI API");
+                inDataSection = true;
+                eventData.Append(line[6..].Trim()); // Remove 'data: ' prefix and trim
             }
-
-            var chatResponse = JsonSerializer.Deserialize<ChatResponse>(
-                responseContent, 
-                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-
-            if (chatResponse?.Choices?.FirstOrDefault()?.Message?.Content is not { } assistantResponse)
+            else if (inDataSection)
             {
-                _logger.LogError("Invalid response format from OpenAI API: {Response}", responseContent);
-                throw new InvalidOperationException("Invalid response format from OpenAI API");
+                // If we're in a data section but the line doesn't start with 'data: ',
+                // it's a continuation of the JSON data (shouldn't happen with current API but being defensive)
+                eventData.Append(line.Trim());
             }
-
-            _logger.LogInformation("Successfully generated chat response");
-            return assistantResponse.Trim();
         }
-        catch (HttpRequestException httpEx)
-        {
-            _logger.LogError(httpEx, "HTTP error while calling OpenAI API");
-            throw new ApplicationException("Failed to communicate with the AI service. Please check your connection and try again.", httpEx);
-        }
-        catch (JsonException jsonEx)
-        {
-            _logger.LogError(jsonEx, "Error parsing OpenAI API response");
-            throw new ApplicationException("Error processing the AI service response. Please try again.", jsonEx);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Unexpected error generating chat response");
-            throw new ApplicationException("An unexpected error occurred. Please try again later.", ex);
-        }
+        
+        _logger.LogInformation("Successfully generated chat response");
     }
 
     public async ValueTask DisposeAsync()

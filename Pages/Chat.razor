@@ -3,15 +3,19 @@
 @using blazor_spreadsheet_agent.Models
 @using System.Text.Json
 @using System.Threading.Tasks
+@using System.Threading
 @using Microsoft.AspNetCore.Components.Web
+@using System.Text
+@using Microsoft.AspNetCore.WebUtilities
 @inject OpenAIService OpenAIService
-@inject QueryService QueryService
 @inject IJSRuntime JSRuntime
 @inject ILogger<Chat> _logger
 @implements IAsyncDisposable
 
 @using Microsoft.Extensions.Configuration
 @inject IConfiguration Configuration
+@inject NavigationManager NavigationManager
+@inject ILogger<Chat> _logger
 
 <PageTitle>Chat with Agent</PageTitle>
 
@@ -35,30 +39,25 @@
                             <span></span><span></span><span></span>
                         </div>
                     }
+                    @if (message.IsCodeBlock)
+                    {
+                        <div class="message-text">
+                            <pre><code>@message.Text</code></pre>
+                        </div>
+                    }
                     else
                     {
                         <div class="message-text">@message.Text</div>
-                        @if (!string.IsNullOrEmpty(message.Timestamp))
-                        {
-                            <div class="message-time">@message.Timestamp</div>
-                        }
+                    }
+                    @if (!string.IsNullOrEmpty(message.Timestamp) && !message.IsTyping)
+                    {
+                        <div class="message-time">@message.Timestamp</div>
                     }
                 </div>
                 @if (message.Sender == "user")
                 {
                     <div class="message-avatar">👤</div>
                 }
-            </div>
-        }
-        
-        @if (isLoading)
-        {
-            <div class="message assistant">
-                <div class="message-content">
-                    <div class="typing-indicator">
-                        <span></span><span></span><span></span>
-                    </div>
-                </div>
             </div>
         }
     </div>
@@ -72,13 +71,26 @@
                    @bind="userMessage"
                    @bind:event="oninput"
                    @onkeydown="HandleKeyDown"
-                   disabled="@isLoading"
+                   disabled="@(isLoading && !isStreaming)"
                    @ref="chatInputRef" />
-            <button class="btn btn-primary" 
-                    @onclick="SendMessage" 
-                    disabled="@(string.IsNullOrWhiteSpace(userMessage) || isLoading)">
-                <i class="bi bi-send"></i>
-            </button>
+            
+            @if (isStreaming)
+            {
+                <button class="btn btn-danger" 
+                        @onclick="StopStreaming"
+                        title="Stop generating">
+                    <i class="bi bi-stop-fill"></i>
+                </button>
+            }
+            else
+            {
+                <button class="btn btn-primary" 
+                        @onclick="SendMessage" 
+                        disabled="@(string.IsNullOrWhiteSpace(userMessage) || isLoading)"
+                        title="Send message">
+                    <i class="bi bi-send"></i>
+                </button>
+            }
         </div>
     </div>
 </div>
@@ -90,14 +102,18 @@
     private List<ChatMessage> chatMessages = new();
     private ElementReference chatInputRef;
     private DotNetObjectReference<Chat>? dotNetHelper;
+    private CancellationTokenSource? streamingCts;
+    private bool isStreaming = false;
+    private bool shouldAutoSend = false;
     
     // Local message class for the chat UI
     public class ChatMessage
     {
-        public string Sender { get; set; } = "user"; // 'user' or 'assistant'
+        public string Sender { get; set; } = "user"; // 'user' or 'assistant' or 'system'
         public string Text { get; set; } = string.Empty;
         public string Timestamp { get; set; } = DateTime.Now.ToString("h:mm tt");
         public bool IsTyping { get; set; } = false;
+        public bool IsCodeBlock { get; set; } = false;
         
         // Convert to the OpenAI ChatMessage format
         public Models.ChatMessage ToOpenAIChatMessage()
@@ -121,17 +137,59 @@
         }
     }
     
-    protected override Task OnInitializedAsync()
+    private async Task AddSystemMessage(string message, bool isCodeBlock = false)
     {
-        // Add welcome message
-        chatMessages.Add(new ChatMessage 
-        { 
-            Sender = "assistant", 
-            Text = "Hello! I'm your spreadsheet assistant. How can I help you today?",
-            Timestamp = DateTime.Now.ToString("h:mm tt")
-        });
-        
-        return Task.CompletedTask;
+        var systemMessage = new ChatMessage
+        {
+            Sender = "system",
+            Text = message,
+            Timestamp = DateTime.Now.ToString("h:mm tt"),
+            IsCodeBlock = isCodeBlock
+        };
+        chatMessages.Add(systemMessage);
+        StateHasChanged();
+        await ScrollToBottom();
+    }
+    
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            // Check for summary parameter in the URL
+            var uri = NavigationManager.ToAbsoluteUri(NavigationManager.Uri);
+            if (QueryHelpers.ParseQuery(uri.Query).TryGetValue("summary", out var summaryParam) && 
+                !string.IsNullOrEmpty(summaryParam))
+            {
+                var summary = Uri.UnescapeDataString(summaryParam);
+                
+                // Add the summary as a user message so it's included in the conversation context
+                var summaryMessage = new ChatMessage
+                {
+                    Sender = "user",
+                    Text = $"Please analyze this spreadsheet data:\n\n```markdown\n{summary}\n```",
+                    Timestamp = DateTime.Now.ToString("h:mm tt"),
+                    IsCodeBlock = true
+                };
+                chatMessages.Add(summaryMessage);
+                
+                // Auto-send a message to analyze the data
+                userMessage = "Please analyze this spreadsheet data and provide insights.";
+                shouldAutoSend = true;
+                StateHasChanged();
+                await ScrollToBottom();
+            }
+            
+            // Initialize chat with welcome message if empty
+            if (chatMessages.Count == 0)
+            {
+                await AddSystemMessage("Hello! I'm your lead delivery assistant. How can I help you today?");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error initializing chat");
+            await AddSystemMessage("An error occurred while initializing the chat. Please refresh the page.");
+        }
     }
     
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -144,13 +202,59 @@
         await ScrollToBottom();
     }
     
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
+        await StopStreamingAsync();
+        
         if (dotNetHelper != null)
         {
             dotNetHelper.Dispose();
         }
-        return ValueTask.CompletedTask;
+    }
+    
+    private async Task StopStreamingAsync()
+    {
+        if (isStreaming && streamingCts != null)
+        {
+            try
+            {
+                // Cancel the current streaming operation
+                streamingCts.Cancel();
+                _logger.LogInformation("Streaming was stopped by user");
+                
+                // Find and update the last assistant message
+                var lastAssistantMessage = chatMessages.LastOrDefault(m => m.Sender == "assistant" && m.IsTyping);
+                if (lastAssistantMessage != null)
+                {
+                    lastAssistantMessage.IsTyping = false;
+                    if (string.IsNullOrWhiteSpace(lastAssistantMessage.Text))
+                    {
+                        lastAssistantMessage.Text = "[Generation stopped by user]";
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error stopping streaming");
+            }
+            finally
+            {
+                // Reset the streaming state
+                isStreaming = false;
+                isLoading = false;
+                StateHasChanged();
+                await JSRuntime.InvokeVoidAsync("chat.focusInput", "chat-input");
+                
+                // Clean up the cancellation token source
+                streamingCts?.Dispose();
+                streamingCts = null;
+            }
+        }
+    }
+    
+    private async Task StopStreaming()
+    {
+        await StopStreamingAsync();
     }
     
     [JSInvokable]
@@ -169,7 +273,10 @@
     
     private async Task SendMessage()
     {
-        if (string.IsNullOrWhiteSpace(userMessage)) return;
+        if (string.IsNullOrWhiteSpace(userMessage) || isStreaming) return;
+        
+        // Cancel any existing streaming operation
+        await StopStreamingAsync();
         
         // Add user message to chat
         var userMsg = new ChatMessage 
@@ -195,42 +302,93 @@
         
         try
         {
+            isStreaming = true;
             isLoading = true;
             StateHasChanged();
             await ScrollToBottom();
             
             // Prepare conversation history for context
             var history = chatMessages
-                .Where(m => !m.IsTyping && !string.IsNullOrEmpty(m.Text))
+                .Where(m => !m.IsTyping && !string.IsNullOrEmpty(m.Text) && m != assistantMessage)
                 .Select(m => m.ToOpenAIChatMessage())
                 .ToList();
             
-            // Get response from OpenAI
-            var response = await OpenAIService.GenerateChatResponseAsync(currentMessage, history);
+            // Create a new cancellation token source for this streaming operation
+            streamingCts = new CancellationTokenSource();
             
-            // Update assistant message with actual response
-            assistantMessage.IsTyping = false;
-            assistantMessage.Text = response;
+            // Start streaming the response
+            var responseBuilder = new StringBuilder();
+            
+            // Force initial render
+            StateHasChanged();
+            await Task.Delay(1);
+            
+            // Start with an empty message that shows the typing indicator
+            assistantMessage.Text = string.Empty;
+            assistantMessage.IsTyping = true;
+            StateHasChanged();
+            await Task.Delay(1);
+            
+            try
+            {
+                await foreach (var chunk in OpenAIService.StreamChatResponseAsync(
+                    currentMessage, 
+                    history, 
+                    streamingCts.Token))
+                {
+                    if (string.IsNullOrEmpty(chunk)) continue;
+                    
+                    // Append the chunk to our buffer and update the message
+                    responseBuilder.Append(chunk);
+                    assistantMessage.Text = responseBuilder.ToString();
+                    assistantMessage.IsTyping = false;
+                    
+                    // Force UI update
+                    StateHasChanged();
+                    await ScrollToBottom();
+                    
+                    // Small delay to allow the UI to update
+                    await Task.Delay(1);
+                    
+                    // Yield control to the UI thread
+                    await Task.Yield();
+                }
+            }
+            finally
+            {
+                // Ensure typing indicator is always turned off when done
+                assistantMessage.IsTyping = false;
+            }
             
             _logger.LogInformation("Chat message processed: {Message}", currentMessage);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("Streaming was canceled by the user");
+            // Remove the assistant's message if it's empty
+            if (string.IsNullOrWhiteSpace(assistantMessage.Text))
+            {
+                chatMessages.Remove(assistantMessage);
+            }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error processing message");
             errorMessage = "Sorry, there was an error processing your message.";
-            chatMessages.Add(new ChatMessage 
-            { 
-                Sender = "assistant", 
-                Text = errorMessage,
-                Timestamp = DateTime.Now.ToString("h:mm tt")
-            });
+            assistantMessage.Text = errorMessage;
         }
         finally
         {
+            assistantMessage.IsTyping = false;
+            isStreaming = false;
             isLoading = false;
             StateHasChanged();
             await ScrollToBottom();
             await JSRuntime.InvokeVoidAsync("chat.focusInput", "chat-input");
+            
+            // Clean up the cancellation token source
+            streamingCts?.Dispose();
+            streamingCts = null;
         }
     }
 
