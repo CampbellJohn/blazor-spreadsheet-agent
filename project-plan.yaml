@@ -2,9 +2,9 @@
 
 project:
   name: "Blazor Spreadsheet Agent"
-  description: "An application to upload spreadsheets, store them in SQL, query with natural language via OpenAI, and export to Eloqua"
+  description: "An application to upload spreadsheets, store them in SQL, have an agent help prepare the data with the required columns for lead delivery, and then send them to Eloqua via API."
   version: "1.0.0"
-  targetFramework: "net7.0"
+  targetFramework: "net8.0"
 
 dependencies:
   backend:
@@ -12,10 +12,7 @@ dependencies:
     - "Microsoft.EntityFrameworkCore.Tools"
     - "DocumentFormat.OpenXml"  # For Excel file processing
     - "CsvHelper"  # For CSV file processing
-    - "Azure.AI.OpenAI"  # For OpenAI integration
-    - "RestSharp"  # For Eloqua API calls
-    - "Serilog"  # For logging
-    - "FluentValidation"  # For input validation
+    - "OpenAI"  # For OpenAI integration
 
   frontend:
     - "Blazor"
@@ -53,21 +50,6 @@ database:
         - name: "RowData"
           type: "string(MAX)"  # JSON serialized row data
 
-    - name: "QueryLogs"
-      description: "Logs all natural language queries and their results"
-      columns:
-        - name: "Id"
-          type: "int"
-          isPrimaryKey: true
-          isIdentity: true
-        - name: "QueryText"
-          type: "nvarchar(1000)"
-        - name: "GeneratedSql"
-          type: "nvarchar(MAX)"
-        - name: "Timestamp"
-          type: "datetime"
-          defaultValue: "GETDATE()"
-
 phases:
   - name: "Phase 1: Project Setup & Database"
     tasks:
@@ -86,81 +68,23 @@ phases:
       - "Implement data validation"
       - "Store data in database"
 
-  - name: "Phase 3: Natural Language Query"
+  - name: "Phase 3: Data Preparation & Analysis"
     tasks:
-      - "Integrate OpenAI API"
-      - "Create prompt templates for SQL generation"
-      - "Implement query validation"
-      - "Create query execution service"
-      - "Build query history feature"
+      - "Implement data preview functionality"
+      - "Create column mapping interface"
+      - "Integrate OpenAI for data analysis"
+      - "Add data transformation rules"
+      - "Implement data validation rules"
+      - "Create data cleaning utilities"
+      - "Add data enrichment capabilities"
 
   - name: "Phase 4: Eloqua Integration"
     tasks:
-      - "Set up Eloqua API client"
-      - "Implement authentication"
-      - "Create data export functionality"
-      - "Add approval workflow"
-      - "Implement error handling"
+      - "Mock Eloqua API authentication and integration."
 
-  - name: "Phase 5: UI/UX & Testing"
+  - name: "Phase 5: Deployment & Documentation"
     tasks:
-      - "Create dashboard"
-      - "Implement results display"
-      - "Add loading states and error handling"
-      - "Write unit tests"
-      - "Perform integration testing"
-      - "User acceptance testing"
-
-  - name: "Phase 6: Deployment"
-    tasks:
-      - "Set up CI/CD pipeline"
-      - "Configure production environment"
+      - "Configure Docker containers"
       - "Deploy application"
-      - "Monitor and gather feedback"
+      - "Create user documentation"
 
-apiEndpoints:
-  - method: "POST"
-    path: "/api/spreadsheets/upload"
-    description: "Upload and process a spreadsheet file"
-    
-  - method: "POST"
-    path: "/api/query/execute"
-    description: "Execute a natural language query"
-    
-  - method: "POST"
-    path: "/api/eloqua/export"
-    description: "Export data to Eloqua"
-
-environmentVariables:
-  - name: "ConnectionStrings__DefaultConnection"
-    description: "SQL Server connection string"
-    required: true
-    
-  - name: "OpenAI__ApiKey"
-    description: "OpenAI API key"
-    required: true
-    
-  - name: "Eloqua__ApiKey"
-    description: "Eloqua API key"
-    required: true
-    
-  - name: "Eloqua__CompanyId"
-    description: "Eloqua company ID"
-    required: true
-
-frontendRoutes:
-  - path: "/"
-    component: "Dashboard"
-    description: "Main dashboard with upload and query features"
-    
-  - path: "/spreadsheets"
-    component: "SpreadsheetList"
-    description: "List of uploaded spreadsheets"
-    
-  - path: "/query"
-    component: "QueryInterface"
-    description: "Natural language query interface"
-    
-  - path: "/history"
-    component: "QueryHistory"
-    description: "Query execution history"

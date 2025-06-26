@@ -1,6 +1,7 @@
 @page "/"
 @using blazor_spreadsheet_agent.Models
 @using System.Globalization
+@using System.Text
 @inject SpreadsheetService SpreadsheetService
 @inject NavigationManager NavigationManager
 @inject ILogger<Index> Logger
@@ -61,13 +62,10 @@ else if (spreadsheets?.Any() == true)
                             <td class="text-end">@FormatFileSize(sheet.FileSize)</td>
                             <td class="text-end">
                                 <div class="btn-group btn-group-sm" role="group">
-                                    <button class="btn btn-outline-primary" @onclick="() => ViewSpreadsheet(sheet.Id)" title="View">
-                                        <i class="bi bi-eye"></i>
+                                    <button class="btn btn-outline-primary btn-sm" @onclick="() => AnalyzeSpreadsheet(sheet)" title="Analyze">
+                                        <i class="bi bi-robot"></i> Analyze
                                     </button>
-                                    <button class="btn btn-outline-secondary" @onclick="() => QuerySpreadsheet(sheet.Id)" title="Query">
-                                        <i class="bi bi-search"></i>
-                                    </button>
-                                    <button class="btn btn-outline-danger" @onclick="() => DeleteSpreadsheet(sheet)" title="Delete">
+                                    <button class="btn btn-outline-danger btn-sm" @onclick="() => DeleteSpreadsheet(sheet)" title="Delete">
                                         <i class="bi bi-trash"></i>
                                     </button>
                                 </div>
@@ -179,14 +177,59 @@ else
         await LoadSpreadsheets();
     }
 
-    private void ViewSpreadsheet(int id)
+    private async Task AnalyzeSpreadsheet(Spreadsheet spreadsheet)
     {
-        NavigationManager.NavigateTo($"/spreadsheet/{id}");
+        try
+        {
+            // Get the spreadsheet data
+            var data = await SpreadsheetService.GetSpreadsheetDataAsync(spreadsheet.Id);
+            
+            // Generate a semantic summary of the data
+            var summary = GenerateDataSummary(spreadsheet, data);
+            
+            // Navigate to chat with the summary as a message
+            var encodedSummary = Uri.EscapeDataString(summary);
+            NavigationManager.NavigateTo($"/chat?summary={encodedSummary}");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error analyzing spreadsheet");
+            // In a real app, show an error message to the user
+        }
     }
 
-    private void QuerySpreadsheet(int id)
+    private string GenerateDataSummary(Spreadsheet spreadsheet, List<SpreadsheetData> data)
     {
-        NavigationManager.NavigateTo($"/query/{id}");
+        // Basic summary information
+        var summary = new StringBuilder();
+        summary.AppendLine($"# Analysis of {spreadsheet.FileName}\n");
+        
+        // Basic stats
+        summary.AppendLine("## Summary Statistics");
+        summary.AppendLine($"- Total Rows: {data.Count}");
+        
+        // Get column names from the first data row (if available)
+        if (data.Count > 0)
+        {
+            var firstRow = data[0];
+            var columns = firstRow.Data.Keys.OrderBy(k => k).ToList();
+            
+            summary.AppendLine($"\n## Columns ({columns.Count})");
+            foreach (var column in columns)
+            {
+                summary.AppendLine($"- {column}");
+            }
+            
+            // Sample values from first row
+            summary.AppendLine("\n## Sample Data");
+            foreach (var column in columns.Take(5)) // Show first 5 columns
+            {
+                var value = firstRow.Data.ContainsKey(column) ? firstRow.Data[column] : "";
+                summary.AppendLine($"- **{column}**: {value}");
+            }
+        }
+        
+        return summary.ToString();
     }
 
     private void DeleteSpreadsheet(Spreadsheet spreadsheet)

@@ -70,6 +70,13 @@ public class SpreadsheetService
             .Include(s => s.DataRows)
             .FirstOrDefaultAsync(s => s.Id == id);
     }
+    
+    public async Task<List<SpreadsheetData>> GetSpreadsheetDataAsync(int spreadsheetId)
+    {
+        return await _context.SpreadsheetData
+            .Where(d => d.SpreadsheetId == spreadsheetId)
+            .ToListAsync();
+    }
 
     public async Task<List<Spreadsheet>> GetSpreadsheetsAsync()
     {
